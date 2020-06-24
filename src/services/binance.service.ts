@@ -2,6 +2,8 @@ import * as crypto from 'crypto';
 import CoreService from './core.service';
 import axios from 'axios';
 import { TradeSide } from '../classes/enums';
+import { PriceItem } from '../classes/price-item.class';
+import { Depth } from '../classes/depth.class';
 
 class BinanceService {
     private urlBase: string = "https://binance.com/api";
@@ -23,12 +25,13 @@ class BinanceService {
         const endpoint = '/v3/exchangeInfo';
         const data = await this.onGet(endpoint);
         const tickers = await this.getPrices();
-        let pairs: any[] = [];
+        let pairs: PriceItem[] = [];
 
         data.symbols.forEach((symbol: any) => {
             if(symbol.status === "TRADING") {
                 const price = tickers[symbol.symbol];
-                pairs.push([symbol.symbol, symbol.baseAsset, symbol.quoteAsset, price]);
+                let item = new PriceItem(symbol.symbol, symbol.baseAsset, symbol.quoteAsset, price);
+                pairs.push(item);
             }
         });
 
@@ -50,7 +53,13 @@ class BinanceService {
         };
         const data = await this.onGet(endpoint, body, false);
 
-        return data;
+        const depth: Depth = {
+            pair: pair,
+            bid: data.bids[0][0],
+            ask: data.asks[0][0]
+        };
+
+        return depth;
     }
 
     public placeMarketOrder = async(pair: string, side: TradeSide, quantity: number) => {
@@ -71,6 +80,14 @@ class BinanceService {
     }
 
     public placeLimitOrder = async(pair: string, quantity: number, price: number) => {
+        const data = {
+            symbol: pair,
+            quantity: quantity,
+            price: price
+        }
+
+        console.log(`${data}`);
+
         return true;
     }
 
@@ -96,13 +113,21 @@ class BinanceService {
             const queryString = this.coreSvc.objToQueryString(data);
             url += `?${queryString}`;
         }
+        let config = {
+            headers: {
+                'X-MBX-APIKEY': this.apiKey
+            }
+        };
         if(secure) {
-            const signature = this.signRequest(data);
+            const signature = this.generateSignature(data);
             url += `&signature=${signature}`;
         }
+        
 
         try{
-            const response = await axios.get(url);
+            const response = secure 
+                                ? await axios.get(url, config)
+                                : await axios.get(url);
 
             return response.data;
         } catch(err){
@@ -115,12 +140,19 @@ class BinanceService {
         let url = `${this.urlBase}/${endpoint}`;
         if(secure) {
             body = this.modifyBody(body);
-            const signature = this.signRequest(body);
+            const signature = this.generateSignature(body);
             url += `?signature=${signature}`;
         }
+        let config = {
+            headers: {
+                'X-MBX-APIKEY': this.apiKey
+            }
+        };
 
         try{
-            const response = await axios.post(url, body);
+            const response = secure
+                                ? await axios.post(url, body, config)
+                                : await axios.post(url, body);
 
             return response.data;
         } catch(err){
@@ -139,13 +171,13 @@ class BinanceService {
         return data;
     }
 
-    private signRequest(data: any) {
+    private generateSignature(data: any) {
         let query = this.coreSvc.objToQueryString(data);
         let signature = crypto.createHmac('sha256', this.apiSecret)
                               .update(query)
                               .digest('hex');
 
-
+        return signature;
     }
 }
 
