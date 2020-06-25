@@ -122,7 +122,7 @@ class ArbitrageService {
             }
 
         });
-        console.log(`${this.arbitrages.length + this.reverseArbitrages.length} initial trades built`);
+        console.log(`${this.arbitrages.length + this.reverseArbitrages.length} entry points established`);
     }
 
     private arbitrageIncrement = async() => {
