@@ -4,6 +4,7 @@ import axios from 'axios';
 import { TradeSide } from '../classes/enums';
 import { PriceItem } from '../classes/price-item.class';
 import { Depth } from '../classes/depth.class';
+import { Balance } from '../classes/balance.class';
 
 class BinanceService {
     private urlBase: string = "https://binance.com/api";
@@ -21,15 +22,26 @@ class BinanceService {
         this.coreSvc = new CoreService();
     }
 
+    public serviceReady() {
+        return this.apiKey !== "" && this.apiSecret !== "";
+    }
+
+    public test = async() => {
+        const endpoint = '/v3/ping';
+
+        const result = await this.onGet(endpoint, false);
+
+        return result !== null;
+    }
+
     public getPairs = async() => {
-        const endpoint = '/v3/exchangeInfo';
-        const data = await this.onGet(endpoint);
-        const tickers = await this.getPrices();
+        const data = await this.getExchangeInfo()
+        const tickers: any[] = await this.getPrices();
         let pairs: PriceItem[] = [];
 
         data.symbols.forEach((symbol: any) => {
             if(symbol.status === "TRADING") {
-                const price = tickers[symbol.symbol];
+                const price = tickers.filter(t => t.symbol === symbol.symbol)[0].price;
                 let item = new PriceItem(symbol.symbol, symbol.baseAsset, symbol.quoteAsset, price);
                 pairs.push(item);
             }
@@ -38,25 +50,32 @@ class BinanceService {
         return pairs;
     }
 
+    public getExchangeInfo = async() => {
+        const endpoint = '/v3/exchangeInfo';
+        const data = await this.onGet(endpoint, false);
+
+        return data;
+    }
+
     public getPrices = async() => {
         const endpoint = '/v3/ticker/price';
-        const data = await this.onGet(endpoint);
+        const data = await this.onGet(endpoint, false);
 
         return data;
     }
 
     public getDepth = async(pair: string, limit: number = 5) => {
-        const endpoint = '/v3/depth';
-        const body = {
+        const endpoint = `/v3/depth`;
+        const data = {
             symbol: pair,
             limit: limit
         };
-        const data = await this.onGet(endpoint, body, false);
+        const response = await this.onGetPlusData(endpoint, data, false);
 
         const depth: Depth = {
             pair: pair,
-            bid: data.bids[0][0],
-            ask: data.asks[0][0]
+            bid: response.bids[0][0],
+            ask: response.asks[0][0]
         };
 
         return depth;
@@ -79,32 +98,45 @@ class BinanceService {
         return result;
     }
 
-    public placeLimitOrder = async(pair: string, quantity: number, price: number) => {
-        const data = {
-            symbol: pair,
-            quantity: quantity,
-            price: price
+    public getAvailableBalance = async(symbol: string =  "") => {
+        const data = await this.getAccountInfo();
+
+        const bal = data.balances.filter((b: any) => b.asset === symbol);
+        if(bal.length > 0) {
+            return bal[0].free;
         }
 
-        console.log(`${data}`);
-
-        return true;
+        return 0;
     }
 
-    public checkBalance = async(pair: string = "") => {
-        const endpoint = '/v3/account';
+    public getAvailableBalances = async() => {
+        const data = await this.getAccountInfo();
+        let balances: Balance[] = [];
 
-        const data = await this.onGet(endpoint, null, true);
-        const balances = data.balances;
+        data.balances.forEach((bal: any) => {
+            const balance: Balance = {
+                symbol: bal.asset,
+                quantity: bal.free
+            };
+            balances.push(balance);
+        });
 
-        if(pair !== "") {
-            return balances.filter((b: any) => b.asset === pair);
-        }
-        
         return balances;
     }
 
-    private onGet = async(endpoint: string, data: any = null, secure: boolean = false) => {
+    public getAccountInfo = async() => {
+        const endpoint = '/v3/account';
+
+        const response = await this.onGet(endpoint, true);
+        
+        return response;
+    }
+
+    private onGet = async(endpoint: string, secure: boolean) => {
+        return this.onGetPlusData(endpoint, null, secure);
+    }
+
+    private onGetPlusData = async(endpoint: string, data: any, secure: boolean) => {
         if(secure) {
             data = this.modifyBody(data);
         }
@@ -113,11 +145,6 @@ class BinanceService {
             const queryString = this.coreSvc.objToQueryString(data);
             url += `?${queryString}`;
         }
-        let config = {
-            headers: {
-                'X-MBX-APIKEY': this.apiKey
-            }
-        };
         if(secure) {
             const signature = this.generateSignature(data);
             url += `&signature=${signature}`;
@@ -126,7 +153,7 @@ class BinanceService {
 
         try{
             const response = secure 
-                                ? await axios.get(url, config)
+                                ? await axios.get(url, this.getRequestConfig())
                                 : await axios.get(url);
 
             return response.data;
@@ -143,15 +170,10 @@ class BinanceService {
             const signature = this.generateSignature(body);
             url += `?signature=${signature}`;
         }
-        let config = {
-            headers: {
-                'X-MBX-APIKEY': this.apiKey
-            }
-        };
 
         try{
             const response = secure
-                                ? await axios.post(url, body, config)
+                                ? await axios.post(url, body, this.getRequestConfig())
                                 : await axios.post(url, body);
 
             return response.data;
@@ -160,6 +182,16 @@ class BinanceService {
             return null;
         }
     } 
+
+    private getRequestConfig(){ 
+        const config = {
+            headers: {
+                'X-MBX-APIKEY': this.apiKey
+            }
+        };
+
+        return config;
+    }
 
     private modifyBody(data: any) {
         if(data === null) {
