@@ -1,28 +1,34 @@
-import BinanceService from "./binance.service";
 import { TradeSide } from "../classes/enums";
 import { ArbitragePath } from "../classes/arbitrage-path.class";
 import CoreService from "./core.service";
 import { PriceItem } from "../classes/price-item.class";
 import { Depth } from "../classes/depth.class";
+import ExchangeService from "./exchange.service";
 
 class ArbitrageService {
-    private binanceSvc: BinanceService;
+    private exchangeSvc: ExchangeService;
+    private exchange: string;
     private coreSvc: CoreService;
     private pairs: PriceItem[];
     private arbitrages: ArbitragePath[][];
+    private reverseArbitrages: ArbitragePath[][];
     private profits: ArbitragePath[][];
     private useAvailableBalance: boolean;
     private startingAmount: number;
     private triggerPercent: number;
     private depths: Depth[];
-    private trade: ArbitragePath[][];
+    private trades: ArbitragePath[][];
     private botOn: boolean;
     private placeTrades: boolean;
-    private initialTradeValue: number;
+    private bestPath: ArbitragePath[];
+    private reverseAssets: string[];
+    //private initialTradeValue: number;
 
     constructor() {
-        this.binanceSvc = new BinanceService();
         this.coreSvc = new CoreService();
+        this.exchange = (typeof process.env.EXCHANGE === 'undefined')
+                        ? ""
+                        : process.env.EXCHANGE;
         this.useAvailableBalance = (typeof process.env.USE_AVAILABLE_BALANCE === 'undefined')
                                     ? false
                                     : JSON.parse(process.env.USE_AVAILABLE_BALANCE);
@@ -36,28 +42,39 @@ class ArbitrageService {
                                     ? false
                                     : JSON.parse(process.env.PLACE_TRADES);
         this.botOn = true;
-        this.initialTradeValue = this.startingAmount;
-        this.arbitrages = [];
-        this.depths = [];
-        this.pairs = [];
-        this.profits = [];
-        this.trade = [];
+        if(this.exchange === "") {
+            console.error(`EXCHANGE not identified in config. Bot cannot run`);
+            this.botOn = false;
+        } else {
+            console.log(`Exchange set: ${this.exchange}`);
+        }
+        this.exchangeSvc = new ExchangeService(this.exchange);
+        if(this.placeTrades && !this.exchangeSvc.serviceReady()) {
+            console.error(`Exchange API key/secret not set correctly. No trades will be executed.`);
+            this.placeTrades = false;
+        }
     }
 
     private setDefaults() {
         this.arbitrages = [];
+        this.reverseArbitrages = [];
         this.depths = [];
         this.pairs = [];
         this.profits = [];
-        this.trade = [];
+        this.trades = [];
+        this.bestPath = [];
+        this.reverseAssets = this.exchangeSvc.getReverseAssets();
     }
 
     public startBot = async() => {
         let i = 1;
         while(this.botOn) {
+            if(await !this.exchangeSvc.test()) {
+                console.error('Cannot connect to exchange');
+                return;
+            }
             console.info(`New bot run {${i}}`)
-            this.initialTradeValue = await this.getInitValue();
-            console.log(`${this.initialTradeValue}`)
+            //this.initialTradeValue = await this.getInitValue();
             this.setDefaults();
             await this.buildInitialTrades();
             await this.arbitrageIncrement();
@@ -70,8 +87,13 @@ class ArbitrageService {
         }
     }
 
+    public toggleBot() {
+        this.botOn = !this.botOn;
+    }
+
     private buildInitialTrades = async() => {
-        this.pairs = await this.binanceSvc.getPairs();
+        console.log(`Building initial trades`);
+        this.pairs = await this.exchangeSvc.getPairs();
         const usdts = this.pairs.filter(p => p.quoteAsset === "USDT");
         this.arbitrages = [];
         usdts.forEach(usdt => {
@@ -93,17 +115,30 @@ class ArbitrageService {
                 buy: true,
                 final: 0
             };
-            this.arbitrages.push([path]);
-        })
+            if(this.reverseAssets.indexOf(usdt.baseAsset) >= 0) {
+                this.reverseArbitrages.push([path]);
+            } else {
+                this.arbitrages.push([path]);
+            }
+
+        });
+        console.log(`${this.arbitrages.length + this.reverseArbitrages.length} initial trades built`);
     }
 
     private arbitrageIncrement = async() => {
+        console.log(`Incrementing through trade paths`);
         let iteration = 10;
-        while(iteration >0) {
+        while(iteration > 0) {
             for(let i = this.arbitrages.length - 1; i >= 0; i--) {
                 await this.arbitragePath(this.arbitrages[i], i);
             }
+            for(let i = this.reverseArbitrages.length - 1; i >= 0; i--) {
+                await this.reverseArbitragePath(this.reverseArbitrages[i], i);
+            }
+            iteration--;
         }
+        console.log(`${this.arbitrages.length + this.arbitrages.length} arbitrage paths`);
+        console.log(`${this.profits.length} possible profitable paths`);
     }
 
     private arbitragePath = async(path: ArbitragePath[], idx: number) => {
@@ -170,15 +205,92 @@ class ArbitrageService {
                             this.arbitrages.push(trail);
                         }
                         if(!more){
-                            const diffPercent = this.coreSvc.percentDiff(this.startingAmount, value);
+                            const validTrade = this.coreSvc.validateTrade(this.startingAmount, value, this.triggerPercent);
 
-                            if(this.coreSvc.validPercent(diffPercent, this.triggerPercent)) {
+                            if(validTrade) {
                                 const uuid = this.coreSvc.getUuid();
                                 trail.forEach(t => {
                                     t.id = uuid;
                                 });
                                 trail[0].final = value;
                                 this.profits.push(trail);
+                                console.log(`Valid trade found: '${trail[0].pair}' --> ${trail[trail.length - 1].value}`);
+                            }
+                        }
+                    }
+                });
+            } else {
+                more = false;
+            }
+        }
+    }
+
+    private reverseArbitragePath = async(path: ArbitragePath[], idx: number) => {
+        const latestPath = path[path.length - 1];
+        const latestPair = this.pairs.filter(p => p.pair === latestPath.pair)[0];
+        const initialPath = Array.from(path);
+        
+        if(path.length === 1 || latestPair.quoteAsset !== 'USDT') {
+            const nexts = path.length === 1
+                            ? this.getReversePairs(latestPair.baseAsset)
+                            : this.pairs.filter(p => p.baseAsset === latestPair.baseAsset 
+                                                 && p.quoteAsset === 'USDT');
+            
+            let i = 0;
+            let more = true;
+            if(nexts.length > 0) {
+                nexts.forEach(next => {
+                    let trail = Array.from(initialPath);
+
+                    if(path.filter(p => p.pair === next.pair).length === 0
+                                        && (latestPath.unit === next.baseAsset 
+                                            || latestPath.unit === next.quoteAsset)){
+                        more = next.quoteAsset === 'USDT' ? false : true;
+                        let price = +next.price;
+                        let value = latestPath.unit === next.baseAsset
+                                    ? latestPath.value * price
+                                    : latestPath.value / price;
+                        let buy = latestPath.unit === next.baseAsset
+                                    ? false : true;
+                        let asset = buy ? next.baseAsset : next.quoteAsset;
+                        value = next.quoteAsset === 'BTC' || next.quoteAsset[2] === 'ETH'
+                                    ? +value.toFixed(8)
+                                    : +value.toFixed(4);
+                        price = +this.coreSvc.decimalCleanup(next.price);
+
+                        const item: ArbitragePath = {
+                            id: "",
+                            exchange: "",
+                            final: 0,
+                            previous: latestPath.pair,
+                            value: value,
+                            orderBookValue: 0,
+                            pair: next.pair,
+                            price: price.toString(),
+                            unit: asset,
+                            continue: more,
+                            possible: false,
+                            bestPrice: "",
+                            buy: buy
+                        };
+                        i++;
+                        trail.push(item);
+                        if(i === 1) {
+                            this.reverseArbitrages[idx] = trail;
+                        } else {
+                            this.reverseArbitrages.push(trail);
+                        }
+                        if(!more){
+                            const validTrade = this.coreSvc.validateTrade(this.startingAmount, value, this.triggerPercent);
+
+                            if(validTrade) {
+                                const uuid = this.coreSvc.getUuid();
+                                trail.forEach(t => {
+                                    t.id = uuid;
+                                });
+                                trail[0].final = value;
+                                this.profits.push(trail);
+                                console.log(`Valid trade found: '${trail[0].pair}' --> ${trail[trail.length - 1].value}`);
                             }
                         }
                     }
@@ -190,10 +302,11 @@ class ArbitrageService {
     }
 
     private validateBooks = async() => {
-        this.trade = [];
+        this.trades = [];
         if(this.profits.length === 0) {
             return;
         }
+        console.log(`Validating order books`);
         await this.getBaseDepths();
 
         for await(const profit of this.profits) {
@@ -202,26 +315,26 @@ class ArbitrageService {
     }
 
     private validatePathBooks = async(trail: ArbitragePath[]) => {
+        console.log(`Validating order book of ${trail[0].pair} => ${trail[trail.length -1].pair}`);
         const pairList = trail.map(t => t.pair);
 
         for await(const pair of pairList) {
             await this.bookValidator(trail[0].id, pair);
         }
-        let valid = true;
-        trail.forEach(t => {
-            if(!t.possible) {
-                valid = false;
-            }
-        });
+        const valid = this.coreSvc.validateTrade(this.startingAmount, trail[trail.length - 1].orderBookValue, this.triggerPercent);
+
         if(valid){
-            this.trade.push(trail);
+            console.log(`Valid Trade: ${trail[0].pair} => ${trail[trail.length -1].pair} --> ${trail[trail.length -1].orderBookValue}`);
+            this.trades.push(trail);
+        } else {
+            console.log(`Invalid Trade: ${trail[0].pair} => ${trail[trail.length -1].pair} --> ${trail[trail.length -1].orderBookValue}`);
         }
     }
 
     private bookValidator = async(id: string, pair: string) => {
-        const depth = await this.getDepth(pair);
+        const depth = await this.depthDive(pair);
         let path: ArbitragePath[] = this.coreSvc.getSubArray(this.profits, 'id', id);
-        let thisPair = this.pairs.filter(p => p.pair)[0];
+        let thisPair = this.pairs.filter(p => p.pair === pair)[0];
         let idx = 0;
         let trade: ArbitragePath = new ArbitragePath();
         for(idx = 0; idx < path.length; idx++){
@@ -238,7 +351,7 @@ class ArbitrageService {
                 : true;
         let starting = idx === 0
             ? this.startingAmount
-            : path[idx - 1].value;
+            : path[idx - 1].orderBookValue;
         const bid = +this.coreSvc.decimalCleanup(depth.bid);
         const ask = +this.coreSvc.decimalCleanup(depth.ask);
         let value = !buy
@@ -263,11 +376,11 @@ class ArbitrageService {
         trade.orderBookValue = value;
     }
 
-    private getDepth = async(pair: string) => {
+    private depthDive = async(pair: string) => {
         let depth: Depth;
         const filtered = this.depths.filter(d => d.pair === pair);
         if(filtered.length === 0){
-            depth = await this.binanceSvc.getDepth(pair);
+            depth = await this.exchangeSvc.getDepth(pair);
             this.saveDepth(depth);
             
             return depth;
@@ -280,8 +393,8 @@ class ArbitrageService {
         this.depths = [];
         let pairs = ['BNBUSDT', 'BTCUSDT', 'ETHUSDT', 'TRXUSDT', 'XRPUSDT'];
 
-        for await(const pair of pairs){
-            const depth = await this.binanceSvc.getDepth(pair);
+        for (let i = 0; i < pairs.length; i++){
+            const depth = await this.exchangeSvc.getDepth(pairs[i]);
             this.saveDepth(depth);
         }
     }
@@ -293,58 +406,82 @@ class ArbitrageService {
     }
 
     private printValid = async() => {
-        if(this.trade.length === 0 ){
+        if(this.trades.length === 0 ){
             console.error(`No valid trades w/ ${this.triggerPercent}% profit.`);
             return;
         }
-        console.info(`${this.trade.length} valid trades found:`);
-        for(const t of this.trade) {
-            let msg = `${this.startingAmount} ${t[0].previous}`;
-            msg += `-> ${t[0].value} ${t[0].unit}`;
-            msg += `-> ${t[1].value} ${t[1].unit}`;
-            msg += `-> ${t[2].value} ${t[2].unit}`;
-
-            console.info(msg);
+        console.info(`${this.trades.length} valid trades found:`);
+        let maxValue = 0;
+        for(const t of this.trades) {
+            this.printPath(t);
+            
+            if(t[t.length - 1].orderBookValue > maxValue) {
+                maxValue = t[t.length - 1].orderBookValue;
+                this.bestPath = t;
+            }
         }
-        console.info(`-----------------------------------`)
+        console.info(`-----------------------------------`);
+        console.log(`Best trade:`);
+        this.printPath(this.bestPath);
+        console.info(`-----------------------------------`);
+    }
+
+    private printPath(path: ArbitragePath[]) {
+        let msg = `${this.startingAmount} ${path[0].previous}`;
+        for(let i = 0; i < path.length; i++) {
+            msg += `-> ${path[i].value} ${path[i].unit}`;
+        }
+
+        console.log(msg);
+
+        return;
     }
 
     private getInitValue = async() => {
         let balance = 0;
         if(this.useAvailableBalance){
-            balance = await this.getAvailableBalance('USDT');
+            balance = await this.exchangeSvc.getAvailableBalance('USDT');
         } else {
             balance = this.startingAmount;
         }
 
         return balance;
     }
-
-    private getAvailableBalance = async(symbol:string) => {
-        let balance = await this.binanceSvc.checkBalance(symbol);
-
-        return balance;
-    }
-
     private executeTrades = async() => {
-        const path = this.trade[0];
+        if(this.bestPath.length === 0) {
+            console.log('No profitable trades available to trade');
+            return;
+        }
 
-        for(let i = 0; i < path.length; i++){
-            const side = path[i].buy ? TradeSide.BUY : TradeSide.SELL;
+        for(let i = 0; i < this.bestPath.length; i++){
+            const side = this.bestPath[i].buy ? TradeSide.BUY : TradeSide.SELL;
             let quantity = i === 0
                 ? await this.getInitValue()
-                : await this.getAvailableBalance(path[i - 1].unit);
+                : await this.exchangeSvc.getAvailableBalance(this.bestPath[i - 1].unit);
 
-            const result = await this.placeOrder(path[i].pair, side, quantity);
+            const result = await this.exchangeSvc.placeOrder(this.bestPath[i].pair, side, quantity);
+
+            if(quantity === 0){
+                console.log(`Insufficient ${this.bestPath[i - 1].unit} balance: '${quantity}'`);
+                return;
+            }
 
             return result;
         }
     }
 
-    private placeOrder = async(pair: string, side: TradeSide, quantity: number) => {
-        const result = await this.binanceSvc.placeMarketOrder(pair, side, quantity);
+    private getReversePairs(quoteAsset: string) {
+        const subSet = this.pairs.filter(p => p.quoteAsset === quoteAsset);
+        const coins = this.pairs.filter(p => p.quoteAsset === 'USDT').map(p => p.baseAsset);
+        let pairs: PriceItem[] = [];
 
-        return result;
+        subSet.forEach(sub => {
+            if(coins.indexOf(sub.baseAsset) >= 0) {
+                pairs.push(sub);
+            }
+        });
+
+        return pairs;
     }
 }
 

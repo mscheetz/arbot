@@ -39,6 +39,9 @@ class CoreService {
     }
 
     public decimalCleanup = function(value: string) {
+        if(typeof value === 'undefined' || value === "") {
+            return "";
+        }
         let cleaned = "";
         let valueArray = value.split("");
     
@@ -57,7 +60,8 @@ class CoreService {
     }
 
     public percentDiff = function(base: number, compare: number) {
-        return 1 - (compare - base);
+        const percent = 1 - (base / compare);
+        return percent;
     }
 
     public validPercent = function(actual: number, compare: number) {
@@ -66,6 +70,13 @@ class CoreService {
                                 : compare; 
         
         return actual >= comparePercent;
+    }
+
+    public validateTrade(startingAmount: number, value: number, triggerPercent: number) {
+        const diffPercent = this.percentDiff(startingAmount, value);
+        const validTrade = this.validPercent(diffPercent, triggerPercent);
+
+        return validTrade;
     }
 
     public getUuid = function() {
