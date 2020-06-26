@@ -13,7 +13,7 @@ class CoreService {
             qs += `${o}=${obj[o]}`;
         });
 
-        return "";
+        return qs;
     }
 
     public getSubArray(array: any[], prop: string, value: any) {

@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import CoreService from './core.service';
 import axios from 'axios';
-import { TradeSide } from '../classes/enums';
+import { TradeSide, TradeType } from '../classes/enums';
 import { PriceItem } from '../classes/price-item.class';
 import { Depth } from '../classes/depth.class';
 import { Balance } from '../classes/balance.class';
@@ -82,31 +82,21 @@ class BinanceService {
     }
 
     public placeMarketOrder = async(pair: string, side: TradeSide, quantity: number) => {
-        const endpoint = 'v3/order';
+        const endpoint = '/v3/order';
         let body: any = {
             symbol: pair,
-            side: side
+            side: side,
+            type: TradeType.MARKET
         };
         if(side === TradeSide.BUY) {
-            body.quoteOrderQuantity = quantity;
+            body.quoteOrderQty = quantity;
         } else {
             body.quantity = quantity;
         }
 
-        const result = await this.onPost(endpoint, body, true);
+        const result = await this.onPost(endpoint, body, true, true);
 
         return result;
-    }
-
-    public getAvailableBalance = async(symbol: string =  "") => {
-        const data = await this.getAccountInfo();
-
-        const bal = data.balances.filter((b: any) => b.asset === symbol);
-        if(bal.length > 0) {
-            return bal[0].free;
-        }
-
-        return 0;
     }
 
     public getAvailableBalances = async() => {
@@ -132,15 +122,23 @@ class BinanceService {
         return response;
     }
 
+    public getTimestamp = async() => {
+        const endpoint = '/v3/time';
+
+        const response = await this.onGet(endpoint, false);
+        
+        return response.serverTime;
+    }
+
     private onGet = async(endpoint: string, secure: boolean) => {
         return this.onGetPlusData(endpoint, null, secure);
     }
 
     private onGetPlusData = async(endpoint: string, data: any, secure: boolean) => {
         if(secure) {
-            data = this.modifyBody(data);
+            data = await this.modifyBody(data);
         }
-        let url = `${this.urlBase}/${endpoint}`;
+        let url = `${this.urlBase}${endpoint}`;
         if(data !== null) {
             const queryString = this.coreSvc.objToQueryString(data);
             url += `?${queryString}`;
@@ -163,12 +161,18 @@ class BinanceService {
         }
     } 
 
-    private onPost = async(endpoint: string, body: any, secure: boolean = false) => {
-        let url = `${this.urlBase}/${endpoint}`;
+    public onPost = async(endpoint: string, body: any, secure: boolean = false, noRequestData: boolean = false) => {
+        let url = `${this.urlBase}${endpoint}`;
         if(secure) {
-            body = this.modifyBody(body);
+            body = await this.modifyBody(body);
             const signature = this.generateSignature(body);
-            url += `?signature=${signature}`;
+            body.signature = signature;
+            if(noRequestData) {
+                const queryString = this.coreSvc.objToQueryString(body);
+                url += `?${queryString}`;
+                body = null;
+            }
+            //url += `?signature=${signature}`;
         }
 
         try{
@@ -186,19 +190,20 @@ class BinanceService {
     private getRequestConfig(){ 
         const config = {
             headers: {
-                'X-MBX-APIKEY': this.apiKey
+                'X-MBX-APIKEY': this.apiKey,
+                'Content-Type': 'application/x-www-form-urlencoded'
             }
         };
 
         return config;
     }
 
-    private modifyBody(data: any) {
+    private modifyBody = async(data: any) => {
         if(data === null) {
             data = {};
         }
-        data.timestamp = new Date().getTime();
-        data.recvWindow = 5000;
+        data.timestamp = new Date().getTime(); //await this.getTimestamp();
+        //data.recvWindow = 5000;
 
         return data;
     }

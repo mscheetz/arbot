@@ -1,9 +1,9 @@
 export enum TradeType {
-    LIMIT,
-    MARKET
+    LIMIT = "LIMIT",
+    MARKET = "MARKET"
 }
 
 export enum TradeSide {
-    BUY,
-    SELL
+    BUY = "BUY",
+    SELL = "SELL"
 }

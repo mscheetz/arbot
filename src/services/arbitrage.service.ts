@@ -19,6 +19,7 @@ class ArbitrageService {
     private depths: Depth[];
     private trades: ArbitragePath[][];
     private botOn: boolean;
+    private closeBot: boolean;
     private placeTrades: boolean;
     private bestPath: ArbitragePath[];
     private reverseAssets: string[];
@@ -41,10 +42,12 @@ class ArbitrageService {
         this.placeTrades = (typeof process.env.PLACE_TRADES === 'undefined')
                                     ? false
                                     : JSON.parse(process.env.PLACE_TRADES);
-        this.botOn = true;
+        this.botOn = (typeof process.env.RUN_BOT === 'undefined')
+                            ? true
+                            : JSON.parse(process.env.RUN_BOT);
         if(this.exchange === "") {
             console.error(`EXCHANGE not identified in config. Bot cannot run`);
-            this.botOn = false;
+            this.closeBot = true;
         } else {
             console.log(`Exchange set: ${this.exchange}`);
         }
@@ -52,6 +55,11 @@ class ArbitrageService {
         if(this.placeTrades && !this.exchangeSvc.serviceReady()) {
             console.error(`Exchange API key/secret not set correctly. No trades will be executed.`);
             this.placeTrades = false;
+        }
+        this.checkConnection();
+        this.balanceCheck();
+        if(this.closeBot) {
+            this.onCloseBot();
         }
     }
 
@@ -69,9 +77,10 @@ class ArbitrageService {
     public startBot = async() => {
         let i = 1;
         while(this.botOn) {
-            if(await !this.exchangeSvc.test()) {
+            this.checkConnection();
+            if(this.closeBot) {
                 console.error('Cannot connect to exchange');
-                return;
+                this.onCloseBot();
             }
             console.info(`New bot run {${i}}`)
             //this.initialTradeValue = await this.getInitValue();
@@ -482,6 +491,35 @@ class ArbitrageService {
         });
 
         return pairs;
+    }
+
+    private balanceCheck(){
+        this.exchangeSvc.getAvailableBalance('USDT')
+            .then(bal => {
+                if(bal < this.startingAmount){
+                    console.error(`Insufficient 'USDT' balance to start bot: ${bal}`);
+                    console.error('No trades will be executed');
+                    this.placeTrades = false;
+                }
+            })
+            .catch(err => {
+                console.log(err);
+                this.placeTrades = false;
+            });
+    }
+
+    private checkConnection() {
+        this.exchangeSvc.test()
+            .then(res => {
+                this.botOn = res;
+                this.closeBot = !this.botOn;
+            });
+    }
+
+    private onCloseBot() {
+        console.error('Arbot is closing.');
+        console.error('Peace out!');
+        process.exit();
     }
 }
 
