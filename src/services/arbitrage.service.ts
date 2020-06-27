@@ -1,4 +1,4 @@
-import { TradeSide } from "../classes/enums";
+import { TradeSide, OrderStatus } from "../classes/enums";
 import { ArbitragePath } from "../classes/arbitrage-path.class";
 import CoreService from "./core.service";
 import { PriceItem } from "../classes/price-item.class";
@@ -13,7 +13,7 @@ class ArbitrageService {
     private arbitrages: ArbitragePath[][];
     private reverseArbitrages: ArbitragePath[][];
     private profits: ArbitragePath[][];
-    private useAvailableBalance: boolean;
+    private tradeProfits: boolean;
     private startingAmount: number;
     private triggerPercent: number;
     private depths: Depth[];
@@ -23,16 +23,18 @@ class ArbitrageService {
     private placeTrades: boolean;
     private bestPath: ArbitragePath[];
     private reverseAssets: string[];
-    //private initialTradeValue: number;
+    private runPause: number;
+    private orderCanceled: boolean;
+    private orderCheckTimeout: number;
 
     constructor() {
         this.coreSvc = new CoreService();
         this.exchange = (typeof process.env.EXCHANGE === 'undefined')
                         ? ""
                         : process.env.EXCHANGE;
-        this.useAvailableBalance = (typeof process.env.USE_AVAILABLE_BALANCE === 'undefined')
+        this.tradeProfits = (typeof process.env.TRADE_PROFITS === 'undefined')
                                     ? false
-                                    : JSON.parse(process.env.USE_AVAILABLE_BALANCE);
+                                    : JSON.parse(process.env.TRADE_PROFITS);
         this.startingAmount = (typeof process.env.INITIAL_VALUE === 'undefined')
                                 ? 0
                                 : +process.env.INITIAL_VALUE;
@@ -45,6 +47,12 @@ class ArbitrageService {
         this.botOn = (typeof process.env.RUN_BOT === 'undefined')
                             ? true
                             : JSON.parse(process.env.RUN_BOT);
+        this.runPause = (typeof process.env.RUN_PAUSE_SECONDS === 'undefined')
+                                ? 0
+                                : +process.env.RUN_PAUSE_SECONDS;
+        this.orderCheckTimeout = (typeof process.env.ORDER_CHECK_SECONDS === 'undefined')
+                                ? 0
+                                : +process.env.ORDER_CHECK_SECONDS;
         if(this.exchange === "") {
             console.error(`EXCHANGE not identified in config. Bot cannot run`);
             this.closeBot = true;
@@ -71,6 +79,7 @@ class ArbitrageService {
         this.profits = [];
         this.trades = [];
         this.bestPath = [];
+        this.orderCanceled = false;
         this.reverseAssets = this.exchangeSvc.getReverseAssets();
     }
 
@@ -91,6 +100,9 @@ class ArbitrageService {
             await this.printValid();
             if(this.placeTrades) {
                 await this.executeTrades();
+            }
+            if(this.bestPath.length === 0) {
+                await this.coreSvc.sleep(this.runPause);
             }
             i++;
         }
@@ -416,7 +428,7 @@ class ArbitrageService {
 
     private printValid = async() => {
         if(this.trades.length === 0 ){
-            console.error(`No valid trades w/ ${this.triggerPercent}% profit.`);
+            console.error(`No valid trades w/ ${this.triggerPercent}%+ profit.`);
             return;
         }
         console.info(`${this.trades.length} valid trades found:`);
@@ -448,7 +460,7 @@ class ArbitrageService {
 
     private getInitValue = async() => {
         let balance = 0;
-        if(this.useAvailableBalance){
+        if(this.tradeProfits){
             balance = await this.exchangeSvc.getAvailableBalance('USDT');
         } else {
             balance = this.startingAmount;
@@ -468,14 +480,56 @@ class ArbitrageService {
                 ? await this.getInitValue()
                 : await this.exchangeSvc.getAvailableBalance(this.bestPath[i - 1].unit);
 
-            const result = await this.exchangeSvc.placeOrder(this.bestPath[i].pair, side, quantity);
-
             if(quantity === 0){
                 console.log(`Insufficient ${this.bestPath[i - 1].unit} balance: '${quantity}'`);
                 return;
             }
 
-            return result;
+            const thisPair = this.pairs.filter(p => p.pair === this.bestPath[i].pair)[0];
+            const decimalPlaces = side === TradeSide.BUY 
+                                    ? thisPair.stepSize
+                                    : thisPair.quotePrecision;
+        
+            let tradeQty = i === 0
+                        ? this.bestPath[i].value
+                        : quantity;
+
+            tradeQty = this.coreSvc.roundDown(this.bestPath[i].value, decimalPlaces);
+
+            const result = await this.exchangeSvc.placeLimitOrder(this.bestPath[i].pair, side, tradeQty, +this.bestPath[i].bestPrice);
+            //await this.exchangeSvc.placeMarketOrder(this.bestPath[i].pair, side, tradeQty);
+
+            await this.checkOrderStatus(this.bestPath[i].pair, result.status);
+
+            if(this.orderCanceled) {
+                console.error(`Trade canceled: ${this.bestPath[i].pair} ${side} ${tradeQty}`);
+                console.log('Log into your exchange and start over');
+                this.botOn = false;
+                this.onCloseBot();
+                break;
+            }
+
+            console.log(`Trade excecuted: ${this.bestPath[i].pair} ${side} ${tradeQty}`);
+        }
+    }
+
+    private checkOrderStatus = async(pair: string, orderId: string) => {
+        let checkOn = true;
+        let checkNumber = 1;
+
+        while(checkOn) {
+            const status = await this.exchangeSvc.checkOrderStatus(pair, orderId);
+
+            if(status === OrderStatus.FILLED) {
+                checkOn = false;
+            } else if (status === OrderStatus.CANCELED) {
+                this.orderCanceled = true;
+                checkOn = false;
+            } else {
+                console.log(`{${checkNumber}} ${pair} order not filled. Re-check status in ${this.orderCheckTimeout} seconds.`)
+                await this.coreSvc.sleep(this.orderCheckTimeout);
+            }
+            checkNumber++;
         }
     }
 

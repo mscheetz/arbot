@@ -5,12 +5,14 @@ import { TradeSide, TradeType } from '../classes/enums';
 import { PriceItem } from '../classes/price-item.class';
 import { Depth } from '../classes/depth.class';
 import { Balance } from '../classes/balance.class';
+import Binance from 'binance-api-node';
 
 class BinanceService {
     private urlBase: string = "https://binance.com/api";
     private apiKey: string;
     private apiSecret: string;
     private coreSvc: CoreService;
+    private binance: any;
 
     constructor() {
         this.apiKey = (typeof process.env.BINANCE_KEY === 'undefined')
@@ -20,6 +22,10 @@ class BinanceService {
                         ? ""
                         : process.env.BINANCE_SECRET;
         this.coreSvc = new CoreService();
+        this.binance = Binance({
+            apiKey: this.apiKey,
+            apiSecret: this.apiSecret
+        });
     }
 
     public serviceReady() {
@@ -43,6 +49,14 @@ class BinanceService {
             if(symbol.status === "TRADING") {
                 const price = tickers.filter(t => t.symbol === symbol.symbol)[0].price;
                 let item = new PriceItem(symbol.symbol, symbol.baseAsset, symbol.quoteAsset, price);
+                item.basePrecision = symbol.baseAssetPrecision;
+                item.quotePrecision = symbol.quoteAssetPrecision;
+                const lotSize = symbol.filters.filter((f:any) => f.filterType === "LOT_SIZE");
+                if(lotSize.length > 0) {
+                    const stepSize = lotSize[0].stepSize;
+                    item.stepSize = this.coreSvc.getDecimals(stepSize);
+                }
+
                 pairs.push(item);
             }
         });
@@ -81,7 +95,71 @@ class BinanceService {
         return depth;
     }
 
+    public getOrder = async(pair: string, clientOrderId: string) => {
+        const endpoint = '/v3/order';
+        let data: any = {
+            symbol: pair,
+            origClientOrderId: clientOrderId
+        };
+
+        const result = await this.onGetPlusData(endpoint, data, true);
+
+        return result;
+    }
+
+    public getOrders = async(pair: string) => {
+        const endpoint = '/v3/allOrders';
+        let data: any = {
+            symbol: pair
+        };
+
+        const result = await this.onGetPlusData(endpoint, data, true);
+
+        return result;
+    }
+
+    public placeLimitOrder = async(pair: string, side: TradeSide, quantity: number, price: number) => {
+        let result: any;
+        try{
+            let params: any = {
+                symbol: pair,
+                side: side,
+                type: TradeType.LIMIT,
+                quantity: quantity,
+                price: price
+            };
+            
+            result = await this.binance.order(params);
+        } catch(err) {
+            result = err;
+        }
+
+        return result;
+    }
+
     public placeMarketOrder = async(pair: string, side: TradeSide, quantity: number) => {
+        let result: any;
+        try{
+            let params: any = {
+                symbol: pair,
+                side: side,
+                type: TradeType.MARKET,
+                quantity: quantity
+            };
+            // if(side === TradeSide.BUY) {
+            //     params.quoteOrderQty = quantity;
+            // } else {
+            //     params.quantity = quantity;
+            // }
+            result = await this.binance.order(params);
+        } catch(err) {
+            result = err;
+        }
+
+        return result;
+    }
+
+    public placeMarketOrderOG = async(pair: string, side: TradeSide, quantity: number) => {
         const endpoint = '/v3/order';
         let body: any = {
             symbol: pair,

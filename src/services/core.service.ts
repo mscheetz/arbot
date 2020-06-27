@@ -84,6 +84,39 @@ class CoreService {
 
         return uuid4.toString();
     }
+
+    public roundDown(value: number, decimals: number) {
+        return (Math.floor(value * Math.pow(10, decimals)) / Math.pow(10, decimals));
+    }
+
+    public getDecimals(value: number) {
+        let decimals = 0;
+        if(value < 1) {
+            let valueArray = value.toString().split("");            
+            let decimalFound = false;
+
+            for(let i = 0; i < valueArray.length; i++) {
+                if(!decimalFound && valueArray[i] === ".") {
+                    decimalFound = true;
+                } else if(decimalFound) {
+                    decimals++;
+                    if(valueArray[i] === "1") {
+                        break;
+                    }
+                }
+            }
+        } 
+
+        return decimals;
+    }
+
+    public sleep(seconds: number) {
+        console.log(`Pausing for ${seconds} seconds`);
+        const ms = seconds * 1000;
+        return new Promise((resolve) => {
+            setTimeout(resolve, ms);
+        });
+    }
 }
 
 export default CoreService;
