@@ -154,6 +154,15 @@ class ExchangeService {
         return orders;
     }
 
+    public getCommissions() {
+        let commissions: any = {}
+        if(this.exchange === "BINANCE"){
+            commissions = this.binanceSvc.getCommissions();
+        }
+
+        return commissions;
+    }
+
     public checkOrderStatus = async(pair: string, orderId: string) => {
         const order = await this.getOrder(pair, orderId);
 

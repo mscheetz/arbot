@@ -1,5 +1,6 @@
 export class ArbitragePath {
     constructor() {}
+
     id: string;
     exchange: string;
     previous: string;
@@ -13,4 +14,7 @@ export class ArbitragePath {
     bestPrice: string;
     buy: boolean;
     final: number;
+    tradeQuantity: number;
+    fee: number;
+    feeUnit: string;
 }

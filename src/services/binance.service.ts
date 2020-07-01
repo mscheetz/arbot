@@ -13,6 +13,8 @@ class BinanceService {
     private apiSecret: string;
     private coreSvc: CoreService;
     private binance: any;
+    private makerCommission: number;
+    private takerCommission: number;
 
     constructor() {
         this.apiKey = (typeof process.env.BINANCE_KEY === 'undefined')
@@ -21,6 +23,12 @@ class BinanceService {
         this.apiSecret = typeof process.env.BINANCE_SECRET === 'undefined'
                         ? ""
                         : process.env.BINANCE_SECRET;
+        this.makerCommission = (typeof process.env.MAKER_COMMISSION === 'undefined')
+                                ? 0
+                                : +process.env.MAKER_COMMISSION;
+        this.takerCommission = (typeof process.env.TAKER_COMMISSION === 'undefined')
+                                ? 0
+                                : +process.env.TAKER_COMMISSION;
         this.coreSvc = new CoreService();
         this.binance = Binance({
             apiKey: this.apiKey,
@@ -38,6 +46,13 @@ class BinanceService {
         const result = await this.onGet(endpoint, false);
 
         return result !== null;
+    }
+
+    public getCommissions() {
+        return {
+            maker: this.makerCommission / 100,
+            taker: this.takerCommission / 100
+        };
     }
 
     public getPairs = async() => {
@@ -85,6 +100,8 @@ class BinanceService {
             limit: limit
         };
         const response = await this.onGetPlusData(endpoint, data, false);
+        this.makerCommission = response.makerCommission;
+        this.takerCommission = response.takerCommission;
 
         const depth: Depth = {
             pair: pair,
