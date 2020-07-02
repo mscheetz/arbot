@@ -569,7 +569,7 @@ class ArbitrageService {
 
     private printValid = async() => {
         if(this.trades.length === 0 ){
-            console.error(`{${this.botRun} No valid trades w/ ${this.triggerPercent}%+ profit.`);
+            console.error(`{${this.botRun}} No valid trades w/ ${this.triggerPercent}%+ profit.`);
             return;
         }
         if(this.logLevel === LogLevel.DEBUG) {
