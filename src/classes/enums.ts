@@ -14,3 +14,10 @@ export enum OrderStatus {
     FILLED,
     CANCELED
 }
+
+export enum LogLevel {
+    VERBOSE = "VERBOSE",
+    DEBUG = "DEBUG",
+    INFORMATION = "INFORMATION",
+    ERROR = "ERROR"
+}

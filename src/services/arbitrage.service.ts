@@ -1,4 +1,4 @@
-import { TradeSide, OrderStatus } from "../classes/enums";
+import { TradeSide, OrderStatus, LogLevel } from "../classes/enums";
 import { ArbitragePath } from "../classes/arbitrage-path.class";
 import CoreService from "./core.service";
 import { PriceItem } from "../classes/price-item.class";
@@ -28,6 +28,8 @@ class ArbitrageService {
     private orderCheckTimeout: number;
     private makerCommission: number;
     private takerCommission: number;
+    private logLevel: LogLevel;
+    private botRun: number;
 
     constructor() {
         this.coreSvc = new CoreService();
@@ -61,6 +63,11 @@ class ArbitrageService {
         this.takerCommission = (typeof process.env.TAKER_COMMISSION === 'undefined')
                                 ? 0
                                 : +process.env.TAKER_COMMISSION;
+        const logLevel: string = (typeof process.env.LOG_LEVEL === 'undefined')
+                                ? "DEBUG"
+                                : process.env.LOG_LEVEL;
+        this.logLevel = (<any>LogLevel)[logLevel];
+        console.log(`Logging set to ${this.logLevel}`);
         if(this.exchange === "") {
             console.error(`EXCHANGE not identified in config. Bot cannot run`);
             this.closeBot = true;
@@ -75,6 +82,7 @@ class ArbitrageService {
         this.checkConnection();
         this.balanceCheck();
         this.getCommissions();
+        this.botRun = 0;
         if(this.closeBot) {
             this.onCloseBot();
         }
@@ -93,14 +101,16 @@ class ArbitrageService {
     }
 
     public startBot = async() => {
-        let i = 1;
+        this.botRun = 1;
         while(this.botOn) {
             this.checkConnection();
             if(this.closeBot) {
                 console.error('Cannot connect to exchange');
                 this.onCloseBot();
             }
-            console.info(`New bot run {${i}}`)
+            if(this.logLevel === LogLevel.DEBUG) {
+                console.info(`New bot run {${this.botRun}}`);
+            }
             //this.initialTradeValue = await this.getInitValue();
             this.setDefaults();
             await this.buildInitialTrades();
@@ -111,9 +121,12 @@ class ArbitrageService {
                 await this.executeTrades();
             }
             if(this.bestPath.length === 0) {
+                if(this.logLevel === LogLevel.DEBUG) {
+                    console.log(`Pausing for ${this.runPause} seconds`);
+                }
                 await this.coreSvc.sleep(this.runPause);
             }
-            i++;
+            this.botRun++;
         }
     }
 
@@ -122,7 +135,9 @@ class ArbitrageService {
     }
 
     private buildInitialTrades = async() => {
-        console.log(`Building initial trades`);
+        if(this.logLevel === LogLevel.DEBUG) {
+            console.log(`Building initial trades`);
+        }
         this.pairs = await this.exchangeSvc.getPairs();
         const usdts = this.pairs.filter(p => p.quoteAsset === "USDT");
         this.arbitrages = [];
@@ -156,11 +171,15 @@ class ArbitrageService {
             }
 
         });
-        console.log(`${this.arbitrages.length + this.reverseArbitrages.length} entry points established`);
+        if(this.logLevel === LogLevel.DEBUG) {
+            console.log(`${this.arbitrages.length + this.reverseArbitrages.length} entry points established`);
+        }
     }
 
     private arbitrageIncrement = async() => {
-        console.log(`Incrementing through trade paths`);
+        if(this.logLevel === LogLevel.DEBUG) {
+            console.log(`Incrementing through trade paths`);
+        }
         let iteration = 10;
         while(iteration > 0) {
             for(let i = this.arbitrages.length - 1; i >= 0; i--) {
@@ -171,8 +190,10 @@ class ArbitrageService {
             }
             iteration--;
         }
-        console.log(`${this.arbitrages.length + this.reverseArbitrages.length} arbitrage paths`);
-        console.log(`${this.profits.length} possible profitable paths`);
+        if(this.logLevel === LogLevel.DEBUG) {
+            console.log(`${this.arbitrages.length + this.reverseArbitrages.length} arbitrage paths`);
+            console.log(`${this.profits.length} possible profitable paths`);
+        }
     }
 
     private arbitragePath = async(path: ArbitragePath[], idx: number) => {
@@ -278,7 +299,9 @@ class ArbitrageService {
                                 });
                                 trail[0].final = value;
                                 this.profits.push(trail);
-                                console.log(`Potential trade found: '${trail[0].pair}' --> '${trail[trail.length - 1].pair}' = ${trail[trail.length - 1].value}`);
+                                if(this.logLevel === LogLevel.DEBUG) {
+                                    console.log(`Potential trade found: '${trail[0].pair}' --> '${trail[trail.length - 1].pair}' = ${trail[trail.length - 1].value}`);
+                                }
                             }
                         }
                     }
@@ -386,7 +409,9 @@ class ArbitrageService {
                                 });
                                 validTrail[0].final = value;
                                 this.profits.push(validTrail);
-                                console.log(`Potential trade found: '${validTrail[0].pair}' --> '${validTrail[validTrail.length - 1].pair}' = ${validTrail[validTrail.length - 1].value}`);
+                                if(this.logLevel === LogLevel.DEBUG) {
+                                    console.log(`Potential trade found: '${validTrail[0].pair}' --> '${validTrail[validTrail.length - 1].pair}' = ${validTrail[validTrail.length - 1].value}`);
+                                }
                             }
                         }
                     }
@@ -430,7 +455,9 @@ class ArbitrageService {
         if(this.profits.length === 0) {
             return;
         }
-        console.log(`Validating order books`);
+        if(this.logLevel === LogLevel.DEBUG) {
+            console.log(`Validating order books`);
+        }
         await this.getBaseDepths();
 
         for await(const profit of this.profits) {
@@ -439,7 +466,9 @@ class ArbitrageService {
     }
 
     private validatePathBooks = async(trail: ArbitragePath[]) => {
-        console.log(`Validating order book of ${trail[0].pair} => ${trail[trail.length -1].pair}`);
+        if(this.logLevel === LogLevel.DEBUG) {
+            console.log(`Validating order book of ${trail[0].pair} => ${trail[trail.length -1].pair}`);
+        }
         const pairList = trail.map(t => t.pair);
 
         for await(const pair of pairList) {
@@ -448,11 +477,15 @@ class ArbitrageService {
         const valid = this.coreSvc.validateTrade(this.startingAmount, trail[trail.length - 1].orderBookValue, this.triggerPercent);
 
         if(valid){
-            console.log(`Valid Trade: ${trail[0].pair} => ${trail[trail.length -1].pair} --> ${trail[trail.length -1].orderBookValue}`);
+            if(this.logLevel === LogLevel.DEBUG) {
+                console.log(`Valid Trade: ${trail[0].pair} => ${trail[trail.length -1].pair} --> ${trail[trail.length -1].orderBookValue}`);
+            }
             this.trades.push(trail);
         } else {
-            console.log('Invalid Trade:');
-            this.printPath(trail);
+            if(this.logLevel === LogLevel.DEBUG) {
+                console.log('Invalid Trade:');
+                this.printPath(trail);
+            }
             //console.log(`Invalid Trade: ${trail[0].pair} => ${trail[trail.length -1].pair} --> ${trail[trail.length -1].orderBookValue}`);
         }
     }
@@ -536,23 +569,31 @@ class ArbitrageService {
 
     private printValid = async() => {
         if(this.trades.length === 0 ){
-            console.error(`No valid trades w/ ${this.triggerPercent}%+ profit.`);
+            console.error(`{${this.botRun} No valid trades w/ ${this.triggerPercent}%+ profit.`);
             return;
         }
-        console.info(`${this.trades.length} valid trades found:`);
+        if(this.logLevel === LogLevel.DEBUG) {
+            console.info(`${this.trades.length} valid trades found:`);
+        }
         let maxValue = 0;
-        for(const t of this.trades) {
-            this.printPath(t);
+        for(const t of this.trades) {            
+            if(this.logLevel === LogLevel.DEBUG) {
+                this.printPath(t);
+            }
             
             if(t[t.length - 1].orderBookValue > maxValue) {
                 maxValue = t[t.length - 1].orderBookValue;
                 this.bestPath = t;
             }
+        }        
+        if(this.logLevel === LogLevel.DEBUG) {
+            console.info(`-----------------------------------`);
         }
-        console.info(`-----------------------------------`);
         console.log(`Best trade:`);
-        this.printPath(this.bestPath);
-        console.info(`-----------------------------------`);
+        this.printPath(this.bestPath);        
+        if(this.logLevel === LogLevel.DEBUG) {
+            console.info(`-----------------------------------`);
+        }
     }
 
     private printPath(path: ArbitragePath[]) {

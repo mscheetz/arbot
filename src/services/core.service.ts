@@ -111,7 +111,6 @@ class CoreService {
     }
 
     public sleep(seconds: number) {
-        console.log(`Pausing for ${seconds} seconds`);
         const ms = seconds * 1000;
         return new Promise((resolve) => {
             setTimeout(resolve, ms);
