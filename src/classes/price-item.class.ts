@@ -1,5 +1,6 @@
 export class PriceItem {
-    constructor(pair: string, baseAsset: string, quoteAsset: string, price: string) {
+    constructor(exchange: string, pair: string, baseAsset: string, quoteAsset: string, price: string) {
+        this.exchange = exchange;
         this.pair = pair;
         this.baseAsset = baseAsset;
         this.quoteAsset = quoteAsset;
@@ -9,6 +10,7 @@ export class PriceItem {
         this.stepSize = 0;
     }
 
+    exchange: string;
     pair: string;
     baseAsset: string;
     quoteAsset: string;

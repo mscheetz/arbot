@@ -15,6 +15,7 @@ class BinanceService {
     private binance: any;
     private makerCommission: number;
     private takerCommission: number;
+    private placeTrades: boolean;
 
     constructor() {
         this.apiKey = (typeof process.env.BINANCE_KEY === 'undefined')
@@ -23,17 +24,30 @@ class BinanceService {
         this.apiSecret = typeof process.env.BINANCE_SECRET === 'undefined'
                         ? ""
                         : process.env.BINANCE_SECRET;
-        this.makerCommission = (typeof process.env.MAKER_COMMISSION === 'undefined')
+        this.makerCommission = (typeof process.env.BINANCE_MAKER_COMMISSION === 'undefined')
                                 ? 0
-                                : +process.env.MAKER_COMMISSION;
-        this.takerCommission = (typeof process.env.TAKER_COMMISSION === 'undefined')
+                                : +process.env.BINANCE_MAKER_COMMISSION;
+        this.takerCommission = (typeof process.env.BINANCE_TAKER_COMMISSION === 'undefined')
                                 ? 0
-                                : +process.env.TAKER_COMMISSION;
+                                : +process.env.BINANCE_TAKER_COMMISSION;
+        this.placeTrades = (typeof process.env.PLACE_TRADES === 'undefined')
+                                    ? false
+                                    : JSON.parse(process.env.PLACE_TRADES);
         this.coreSvc = new CoreService();
         this.binance = Binance({
             apiKey: this.apiKey,
             apiSecret: this.apiSecret
         });
+    }
+
+    public setTradeStatus(status: boolean){
+        this.placeTrades = status;
+
+        return status;
+    }
+
+    public getTradeStatus() {
+        return this.placeTrades;
     }
 
     public serviceReady() {
@@ -63,7 +77,7 @@ class BinanceService {
         data.symbols.forEach((symbol: any) => {
             if(symbol.status === "TRADING") {
                 const price = tickers.filter(t => t.symbol === symbol.symbol)[0].price;
-                let item = new PriceItem(symbol.symbol, symbol.baseAsset, symbol.quoteAsset, price);
+                let item = new PriceItem('BINANCE', symbol.symbol, symbol.baseAsset, symbol.quoteAsset, price);
                 item.basePrecision = symbol.baseAssetPrecision;
                 item.quotePrecision = symbol.quoteAssetPrecision;
                 const lotSize = symbol.filters.filter((f:any) => f.filterType === "LOT_SIZE");
@@ -100,10 +114,11 @@ class BinanceService {
             limit: limit
         };
         const response = await this.onGetPlusData(endpoint, data, false);
-        this.makerCommission = response.makerCommission;
-        this.takerCommission = response.takerCommission;
+        // this.makerCommission = response.makerCommission;
+        // this.takerCommission = response.takerCommission;
 
         const depth: Depth = {
+            exchange: 'BINANCE',
             pair: pair,
             bid: response.bids[0][0],
             ask: response.asks[0][0]
